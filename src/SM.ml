@@ -70,9 +70,9 @@ let rec eval ((stack, state) as config) prog =
 
      val run : prg -> int list -> int list
 
-   Takes an input stream, a program, and returns an output stream this program calculates
+   Takes a program, an input stream, and returns an output stream this program calculates
 *)
-let run p i = let (_, (_, _, o)) = eval ([], (Expr.empty, i, [])) p in o
+let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in o
 
 let rec compileExprAcc expr acc = match expr with
   | Language.Expr.Const x -> (CONST x)::acc
