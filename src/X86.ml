@@ -94,16 +94,16 @@ let rec compile env = function
 | (instr::code') ->
   let env, asm =
     match instr with
-    | CONST n -> let pos, env = env#allocate in
-      env, [Mov (L n, pos)]
-    | WRITE -> let pos, env = env#pop in
-      env, [Push pos; Call "Lwrite"; Pop eax]
-    | READ -> let pos, env = env#allocate in
-      env, [Call "Lread"; Mov (eax, pos)]
-    | LD var -> let pos, env = (env#global var)#allocate in
-      env, [Mov(M ("global_" ^ var), pos)]
-    | ST var -> let pos, env = (env#global var)#pop in
-      env, [Mov(pos, M ("global_" ^ var))]
+    | CONST n -> let res, env = env#allocate in
+      env, [Mov (L n, res)]
+    | WRITE -> let res, env = env#pop in
+      env, [Push res; Call "Lwrite"; Pop eax]
+    | READ -> let res, env = env#allocate in
+      env, [Call "Lread"; Mov (eax, res)]
+    | LD var -> let res, env = (env#global var)#allocate in
+      env, [Mov (M ("global_" ^ var), eax); Mov (eax, res)]
+    | ST var -> let res, env = (env#global var)#pop in
+      env, [Mov (res, eax); Mov (eax, M ("global_" ^ var))]
     | BINOP op ->
       let rhs, lhs, env = env#pop2 in
       let res, env = env#allocate in
