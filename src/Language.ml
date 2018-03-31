@@ -73,6 +73,9 @@ module Expr =
       | Var   x -> st x
       | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
 
+    let binopParser op = (ostap($(op)), fun x y -> Binop (op, x, y))
+    let binopParserList ops = List.map binopParser ops
+
     (* Expression parser. You can use the following terminals:
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
