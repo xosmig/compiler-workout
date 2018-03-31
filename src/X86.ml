@@ -102,7 +102,7 @@ let rec compile env = function
       env, [Call "Lread"; Mov (eax, pos)]
     | LD var -> let pos, env = (env#global var)#allocate in
       env, [Mov(M ("global_" ^ var), pos)]
-    | ST var -> let pos, env = env#pop in
+    | ST var -> let pos, env = (env#global var)#pop in
       env, [Mov(pos, M ("global_" ^ var))]
     | BINOP op ->
       let rhs, lhs, env = env#pop2 in
