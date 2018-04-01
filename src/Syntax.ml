@@ -89,7 +89,7 @@ module Stmt =
       | Read (var) -> (match ins with
         | (x::ins) -> ((Expr.update var x state), ins, outs)
         | _ -> failwith "Trying to read from an empty input stream")
-      | Write (expr) -> state, ins, (Expr.eval state expr)::outs
+      | Write (expr) -> state, ins, outs@[Expr.eval state expr]
       | Assign (var, expr) -> (Expr.update var (Expr.eval state expr) state), ins, outs
       | Seq (stmt1, stmt2) -> eval (eval config stmt1) stmt2
 

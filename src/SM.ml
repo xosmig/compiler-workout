@@ -20,6 +20,26 @@ type config = int list * Syntax.Stmt.config
 let intToBool x = x != 0
 let boolToInt b = if b then 1 else 0
 
+let binOpSemantic op = fun x y -> match op with
+| "+" -> x + y
+| "-" -> x - y
+| "*" -> x * y
+| "/" -> x / y
+| "%" -> x mod y
+| ">" -> boolToInt (x > y)
+| "<" -> boolToInt (x < y)
+| ">=" -> boolToInt (x >= y)
+| "<=" -> boolToInt (x <= y)
+| "==" -> boolToInt (x == y)
+| "!=" -> boolToInt (x <> y)
+| "&&" -> boolToInt (intToBool x && intToBool y)
+| "!!" -> boolToInt (intToBool x || intToBool y)
+| _ -> failwith ("Unknown binary operation: '" ^ op ^ "'")
+
+let evalBinOp f stack = match stack with
+|  (y::x::stack) -> (f x y)::stack
+|  _ -> failwith "BINOP: No operands on stack"
+
 (* Stack machine interpreter
 
      val eval : config -> prg -> config
@@ -31,24 +51,18 @@ let rec eval ((stack, state) as config) prog =
   match prog with
   | [] -> config
   | cmd::progTail -> eval (match cmd with
-    | BINOP "+" -> let (y::x::stack) = stack in ((x + y)::stack, state)
-    | BINOP "-" -> let (y::x::stack) = stack in ((x - y)::stack, state)
-    | BINOP "*" -> let (y::x::stack) = stack in ((x * y)::stack, state)
-    | BINOP "/" -> let (y::x::stack) = stack in ((x / y)::stack, state)
-    | BINOP "%" -> let (y::x::stack) = stack in ((x mod y)::stack, state)
-    | BINOP ">" -> let (y::x::stack) = stack in ((boolToInt (x > y))::stack, state)
-    | BINOP "<" -> let (y::x::stack) = stack in ((boolToInt (x < y))::stack, state)
-    | BINOP ">=" -> let (y::x::stack) = stack in ((boolToInt (x >= y))::stack, state)
-    | BINOP "<=" -> let (y::x::stack) = stack in ((boolToInt (x <= y))::stack, state)
-    | BINOP "==" -> let (y::x::stack) = stack in ((boolToInt (x == y))::stack, state)
-    | BINOP "!=" -> let (y::x::stack) = stack in ((boolToInt (x <> y))::stack, state)
-    | BINOP "&&" -> let (y::x::stack) = stack in ((boolToInt (intToBool x && intToBool y))::stack, state)
-    | BINOP "!!" -> let (y::x::stack) = stack in ((boolToInt (intToBool x || intToBool y))::stack, state)
+    | BINOP op -> (evalBinOp (binOpSemantic op) stack, state)
     | CONST x -> (x::stack, state)
-    | READ -> let (x::ins) = ins in (x::stack, (varState, ins, outs))
-    | WRITE -> let (x::stack) = stack in (stack, (varState, ins, x::outs))
+    | READ -> (match ins with
+      | (x::ins) -> (x::stack, (varState, ins, outs))
+      | _ -> failwith "READ: Empty input stream")
+    | WRITE -> (match stack with
+      | (x::stack) -> (stack, (varState, ins, outs@[x]))
+      | _ -> failwith "WRITE: No argument on stack")
     | LD var -> ((varState var)::stack, state)
-    | ST var -> let (x::stack) = stack in (stack, ((Syntax.Expr.update var x varState), ins, outs))
+    | ST var -> (match stack with
+      | (x::stack) -> (stack, ((Syntax.Expr.update var x varState), ins, outs))
+      | _ -> failwith "ST: No argument on stack")
     ) progTail
 
 (* Top-level evaluation
