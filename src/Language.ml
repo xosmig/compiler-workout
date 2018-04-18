@@ -46,10 +46,6 @@ module Expr =
 
        Takes a state and an expression, and returns the value of the expression in
        the given state.
-<<<<<<< HEAD
-    *)
-    let eval st expr = failwith "Not yet implemented"
-=======
      *)
     let to_func op =
       let bti   = function true -> 1 | _ -> 0 in
@@ -76,7 +72,6 @@ module Expr =
       | Const n -> n
       | Var   x -> st x
       | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
->>>>>>> hw4
 
     let binopParser op = (ostap($(op)), fun x y -> Binop (op, x, y))
     let binopParserList ops = List.map binopParser ops
@@ -119,7 +114,7 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) (* add yourself *)  with show
+    (* loop with a post-condition       *) | Until  of Expr.t * t with show
 
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list
@@ -130,19 +125,39 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval ((st, i, o) as conf) stmt =
-      match stmt with
-      | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
-      | Write   e       -> (st, i, o @ [Expr.eval st e])
-      | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
-      | Seq    (s1, s2) -> eval (eval conf s1) s2
+    let rec eval ((st, i, o) as conf) = function
+    | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
+    | Write   e       -> (st, i, o @ [Expr.eval st e])
+    | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
+    | Seq    (s1, s2) -> eval (eval conf s1) s2
+    | Skip            -> conf
+    | If (expr, thenStmt, elseStmt) -> if (Expr.intToBool @@ Expr.eval st expr)
+      then eval conf thenStmt
+      else eval conf elseStmt
+    | While (expr, body) as repeat -> if (Expr.intToBool @@ Expr.eval st expr)
+      then eval (eval conf body) repeat
+      else conf
+    | Until (expr, body) as repeat -> let ((st', _, _) as conf') = (eval conf body) in
+      eval conf' (if not (Expr.intToBool @@ Expr.eval st' expr) then repeat else Skip)
 
     (* Statement parser *)
     ostap (
       primary:
-        -"write" -"(" expr:!(Expr.expr) -")" {Write expr} |
-        -"read" -"(" var:IDENT -")" {Read var} |
-        var:IDENT -":=" expr:!(Expr.expr) {Assign (var, expr)};
+        -"write" -"(" expr:!(Expr.expr) -")" { Write expr } |
+        -"read" -"(" var:IDENT -")" { Read var } |
+        -"skip" { Skip } |
+        ifStmt |
+        -"while" expr:!(Expr.expr) -"do" st:stmt -"od" { While (expr, st) } |
+        -"repeat" st:stmt -"until" expr:!(Expr.expr) { Until (expr, st) } |
+        var:IDENT -":=" expr:!(Expr.expr) { Assign (var, expr) } |
+        forStmt;
+
+      ifRec: expr:!(Expr.expr) -"then" st:stmt sf:(-"else" stmt -"fi" | -"elif" ifRec | -"fi" { Skip })
+        { If (expr, st, sf) };
+      ifStmt: -"if" ifRec;
+
+      forStmt: -"for" init:stmt -"," cond:!(Expr.expr) -"," turn:stmt -"do" body:stmt -"od"
+        { Seq (init, While (cond, Seq (body, turn))) };
 
       stmt:
         !(Ostap.Util.expr

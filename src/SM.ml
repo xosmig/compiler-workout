@@ -50,24 +50,37 @@ let evalBinOp f stack = match stack with
 
    Takes a configuration and a program, and returns a configuration as a result
  *)
-let rec eval ((stack, state) as config) prog =
+let rec eval env config =
+  let (stack, state) = config in
   let (varState, ins, outs) = state in
-  match prog with
-  | [] -> config
-  | cmd::progTail -> eval (match cmd with
+  let evalSimple cmd progTail =
+    let config' = (match cmd with
     | BINOP op -> (evalBinOp (binOpSemantic op) stack, state)
     | CONST x -> (x::stack, state)
     | READ -> (match ins with
-      | (x::ins) -> (x::stack, (varState, ins, outs))
+      | (x::ins') -> (x::stack, (varState, ins', outs))
       | _ -> failwith "READ: Empty input stream")
     | WRITE -> (match stack with
-      | (x::stack) -> (stack, (varState, ins, outs@[x]))
+      | (x::stack') -> (stack', (varState, ins, outs@[x]))
       | _ -> failwith "WRITE: No argument on stack")
     | LD var -> ((varState var)::stack, state)
     | ST var -> (match stack with
-      | (x::stack) -> (stack, ((Language.Expr.update var x varState), ins, outs))
+      | (x::stack') -> (stack', ((Language.Expr.update var x varState), ins, outs))
       | _ -> failwith "ST: No argument on stack")
-    ) progTail
+    | LABEL _ -> config
+    | _ -> failwith "Internal error")
+    in eval env config' progTail
+  in
+  function
+  | [] -> config
+  | cmd::progTail -> (match cmd with
+    | JMP label -> eval env config (env#labeled label)
+    | CJMP (tp, label) -> (match stack with
+      | (x::stack') ->
+        let shouldJump = (match tp with "z" -> x == 0 | "nz" -> x != 0 | _ -> failwith "Unknown CJmp type") in
+        eval env (stack', state) (if shouldJump then (env#labeled label) else progTail)
+      | _ -> failwith "CJMP: Empty stack")
+    | _ -> evalSimple cmd progTail)
 
 (* Top-level evaluation
 
@@ -85,6 +98,44 @@ let run p i =
   let m = make_map M.empty p in
   let (_, (_, _, o)) = eval (object method labeled l = M.find l m end) ([], (Expr.empty, i, [])) p in o
 
+
+class labelGen =
+  object (self)
+    val nextLabelNum = 0
+    method getLabel = {< nextLabelNum = nextLabelNum + 1 >}, Printf.sprintf "SML%d" nextLabelNum
+  end
+
+let rec compileImpl env =
+let rec expr = function
+| Expr.Var   x          -> [LD x]
+| Expr.Const n          -> [CONST n]
+| Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+in
+function
+| Stmt.Seq (s1, s2)   ->
+  let env, sm1 = compileImpl env s1 in
+  let env, sm2 = compileImpl env s2 in
+  env, sm1 @ sm2
+| Stmt.Read x         -> env, [READ; ST x]
+| Stmt.Write e        -> env, expr e @ [WRITE]
+| Stmt.Assign (x, e)  -> env, expr e @ [ST x]
+| Stmt.Skip           -> env, []
+| Stmt.If (e, st, sf) ->
+  let env, lelse = env#getLabel in
+  let env, lend = env#getLabel in
+  let env, smt = compileImpl env st in
+  let env, smf = compileImpl env sf in
+  env, expr e @ [CJMP ("z", lelse)] @ smt @ [JMP lend] @ [LABEL lelse] @ smf @ [LABEL lend]
+| Stmt.While (e, st)  ->
+  let env, lloop = env#getLabel in
+  let env, lcheck = env#getLabel in
+  let env, smt = compileImpl env st in
+  env, [JMP lcheck; LABEL lloop] @ smt @ [LABEL lcheck] @ expr e @ [CJMP ("nz", lloop)]
+| Stmt.Until (e, st)  ->
+  let env, lloop = env#getLabel in
+  let env, smt = compileImpl env st in
+  env, [LABEL lloop] @ smt @ expr e @ [CJMP ("z", lloop)]
+
 (* Stack machine compiler
 
      val compile : Language.Stmt.t -> prg
@@ -92,4 +143,4 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile p = failwith "Not yet implemented"
+let compile stmt = let _, smProg = compileImpl (new labelGen) stmt in smProg

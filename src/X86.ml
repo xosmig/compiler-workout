@@ -97,8 +97,8 @@ let cmpType = function
 *)
 let rec compile env = function
 | [] -> env, []
-| (instr::code') ->
-  let env, asm =
+| (instr::codeTail) ->
+  let env, asm1 =
     match instr with
     | CONST n -> let res, env = env#allocate in
       env, [Mov (L n, res)]
@@ -124,10 +124,12 @@ let rec compile env = function
         | "/" -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov (eax, res)]
         | "%" -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov (edx, res)]
         | _ -> failwith @@ "Unsupported binary operation '" ^ op ^ "'")
-    | _ -> failwith "Unsupported SM instruction"
+    | LABEL label -> env, [Label label]
+    | JMP label   -> env, [Jmp label]
+    | CJMP (tp, label) -> let v, env = env#pop in env, [Binop ("cmp", L 0, v); CJmp (tp, label)]
   in
-  let env, asm' = compile env code' in
-  env, asm @ asm'
+  let env, asm2 = compile env codeTail in
+  env, asm1 @ asm2
 
 (* A set of strings *)
 module S = Set.Make (String)
