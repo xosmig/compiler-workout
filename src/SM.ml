@@ -105,7 +105,9 @@ class labelGen =
     method getLabel = {< nextLabelNum = nextLabelNum + 1 >}, Printf.sprintf "SML%d" nextLabelNum
   end
 
-let rec compileImpl env =
+let tryLabel lname ul = if ul then [LABEL lname] else []
+
+let rec compileImpl env lend =
 let rec expr = function
 | Expr.Var   x          -> [LD x]
 | Expr.Const n          -> [CONST n]
@@ -113,28 +115,29 @@ let rec expr = function
 in
 function
 | Stmt.Seq (s1, s2)   ->
-  let env, sm1 = compileImpl env s1 in
-  let env, sm2 = compileImpl env s2 in
-  env, sm1 @ sm2
-| Stmt.Read x         -> env, [READ; ST x]
-| Stmt.Write e        -> env, expr e @ [WRITE]
-| Stmt.Assign (x, e)  -> env, expr e @ [ST x]
-| Stmt.Skip           -> env, []
+  let env, lend1 = env#getLabel in
+  let env, sm1, ulend1 = compileImpl env lend1 s1 in
+  let env, sm2, ulend = compileImpl env lend  s2 in
+  env, sm1 @ (tryLabel lend1 ulend1) @ sm2, ulend
+| Stmt.Read x         -> env, [READ; ST x], false
+| Stmt.Write e        -> env, expr e @ [WRITE], false
+| Stmt.Assign (x, e)  -> env, expr e @ [ST x], false
+| Stmt.Skip           -> env, [], false
 | Stmt.If (e, st, sf) ->
   let env, lelse = env#getLabel in
-  let env, lend = env#getLabel in
-  let env, smt = compileImpl env st in
-  let env, smf = compileImpl env sf in
-  env, expr e @ [CJMP ("z", lelse)] @ smt @ [JMP lend] @ [LABEL lelse] @ smf @ [LABEL lend]
+  let env, smt, _ = compileImpl env lend st in
+  let env, smf, _ = compileImpl env lend sf in
+  env, expr e @ [CJMP ("z", lelse)] @ smt @ [JMP lend] @ [LABEL lelse] @ smf, true
 | Stmt.While (e, st)  ->
   let env, lloop = env#getLabel in
   let env, lcheck = env#getLabel in
-  let env, smt = compileImpl env st in
-  env, [JMP lcheck; LABEL lloop] @ smt @ [LABEL lcheck] @ expr e @ [CJMP ("nz", lloop)]
+  let env, smt, _ = compileImpl env lcheck st in
+  env, [JMP lcheck; LABEL lloop] @ smt @ [LABEL lcheck] @ expr e @ [CJMP ("nz", lloop)], false
 | Stmt.Until (e, st)  ->
   let env, lloop = env#getLabel in
-  let env, smt = compileImpl env st in
-  env, [LABEL lloop] @ smt @ expr e @ [CJMP ("z", lloop)]
+  let env, lcheck = env#getLabel in
+  let env, smt, ulcheck = compileImpl env lcheck st in
+  env, [LABEL lloop] @ smt @ (tryLabel lcheck ulcheck) @ expr e @ [CJMP ("z", lloop)], false
 
 (* Stack machine compiler
 
@@ -143,4 +146,8 @@ function
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile stmt = let _, smProg = compileImpl (new labelGen) stmt in smProg
+let compile stmt =
+  let env = new labelGen in
+  let env, lend = env#getLabel in
+  let _, smProg, ulend = compileImpl env lend stmt in
+  smProg @ (tryLabel lend ulend)
