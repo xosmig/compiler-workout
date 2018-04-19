@@ -6,14 +6,7 @@ let parse infile =
     (object
        inherit Matcher.t s
        inherit Util.Lexers.decimal s
-<<<<<<< HEAD
        inherit Util.Lexers.ident ["read"; "write"; "skip"; "if"; "then"; "else"; "elif"; "fi"; "while"; "do"; "od"; "repeat"; "until"; "for"; (* add new keywords *)] s
-=======
-       inherit Util.Lexers.ident ["read"; "write"; "skip";
-        "while"; "do"; "od";
-        "if"; "then"; "else"; "elif"; "fi";
-        "repeat"; "until"] s
->>>>>>> hw5
        inherit Util.Lexers.skip [
 	 Matcher.Skip.whitespaces " \t\n";
 	 Matcher.Skip.lineComment "--";
@@ -32,19 +25,12 @@ let main =
     match parse infile with
     | `Ok prog ->
       if to_compile
-<<<<<<< HEAD
       then failwith "Not implemented yet"
-        (*            
+        (*
         let basename = Filename.chop_suffix infile ".expr" in
         ignore @@ X86.build prog basename
         *)
-      else 
-=======
-      then
-        let basename = Filename.chop_suffix infile ".expr" in
-        ignore @@ X86.build prog basename
       else
->>>>>>> hw5
 	let rec read acc =
 	  try
 	    let r = read_int () in

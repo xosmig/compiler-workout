@@ -14,22 +14,27 @@ module State =
     (* State: global state, local state, scope variables *)
     type t = {g : string -> int; l : string -> int; scope : string list}
 
+    let emptyMap s = fun var -> failwith (Printf.sprintf "Undefined %s variable %s" s var)
+
     (* Empty state *)
-    let empty = failwith "Not implemented"
+    let empty = {g = emptyMap "global"; l = emptyMap "local"; scope = []}
 
     (* Update: non-destructively "modifies" the state s by binding the variable x
        to value v and returns the new state w.r.t. a scope
     *)
-    let update x v s = failwith "Not implemented"
+    let update x v s =
+      let updateMap x v m = fun y -> if y = x then v else m y in
+      if List.mem x s.scope then {s with l = updateMap x v s.l}
+                            else {s with g = updateMap x v s.g}
 
     (* Evals a variable in a state w.r.t. a scope *)
-    let eval s x = failwith "Not implemented"
+    let eval s x =  if List.mem x s.scope then s.l x else s.g x
 
     (* Creates a new scope, based on a given state *)
-    let enter st xs = failwith "Not implemented"
+    let enter st xs = {st with l = emptyMap "local"; scope = xs}
 
     (* Drops a scope *)
-    let leave st st' = failwith "Not implemented"
+    let leave st st' = {st with g = st'.g}
 
   end
 
@@ -53,16 +58,10 @@ module Expr =
         *, /, %              --- multiplication, division, reminder
     *)
 
-    (* Expression evaluator
+    let boolToInt = function true -> 1 | false -> 0
+    let intToBool b = b <> 0
 
-          val eval : state -> t -> int
-
-       Takes a state and an expression, and returns the value of the expression in
-       the given state.
-     *)
     let to_func op =
-      let bti   = function true -> 1 | _ -> 0 in
-      let itb b = b <> 0 in
       let (|>) f g   = fun x y -> f (g x y) in
       match op with
       | "+"  -> (+)
@@ -70,20 +69,27 @@ module Expr =
       | "*"  -> ( * )
       | "/"  -> (/)
       | "%"  -> (mod)
-      | "<"  -> bti |> (< )
-      | "<=" -> bti |> (<=)
-      | ">"  -> bti |> (> )
-      | ">=" -> bti |> (>=)
-      | "==" -> bti |> (= )
-      | "!=" -> bti |> (<>)
-      | "&&" -> fun x y -> bti (itb x && itb y)
-      | "!!" -> fun x y -> bti (itb x || itb y)
+      | "<"  -> boolToInt |> (< )
+      | "<=" -> boolToInt |> (<=)
+      | ">"  -> boolToInt |> (> )
+      | ">=" -> boolToInt |> (>=)
+      | "==" -> boolToInt |> (= )
+      | "!=" -> boolToInt |> (<>)
+      | "&&" -> fun x y -> boolToInt (intToBool x && intToBool y)
+      | "!!" -> fun x y -> boolToInt (intToBool x || intToBool y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
 
+    (* Expression evaluator
+
+          val eval : state -> t -> int
+
+       Takes a state and an expression, and returns the value of the expression in
+       the given state.
+     *)
     let rec eval st expr =
       match expr with
       | Const n -> n
-      | Var   x -> st x
+      | Var   x -> State.eval st x
       | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
 
     let binopParser op = (ostap($(op)), fun x y -> Binop (op, x, y))
@@ -144,20 +150,39 @@ module Stmt =
 
        which returns a list of formal parameters, local variables, and a body for given definition
     *)
-    let rec eval env ((st, i, o) as conf) = function
-    | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
+    let rec eval env conf =
+    let (st, i, o) = conf in
+    function
+    | Read    x       -> (match i with z::i' -> (State.update x z st, i', o) | _ -> failwith "Unexpected end of input")
     | Write   e       -> (st, i, o @ [Expr.eval st e])
-    | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
-    | Seq    (s1, s2) -> eval (eval conf s1) s2
+    | Assign (x, e)   -> (State.update x (Expr.eval st e) st, i, o)
+    | Seq    (s1, s2) -> eval env (eval env conf s1) s2
     | Skip            -> conf
-    | If (expr, thenStmt, elseStmt) -> if (Expr.intToBool @@ Expr.eval st expr)
-      then eval conf thenStmt
-      else eval conf elseStmt
-    | While (expr, body) as loop -> if (Expr.intToBool @@ Expr.eval st expr)
-      then eval (eval conf body) loop
-      else conf
-    | Repeat (body, expr) as loop -> let ((st', _, _) as conf') = (eval conf body) in
-      eval conf' (if not (Expr.intToBool @@ Expr.eval st' expr) then loop else Skip)
+    | If (expr, thenStmt, elseStmt) ->
+      if (Expr.intToBool @@ Expr.eval st expr)
+        then eval env conf thenStmt
+        else eval env conf elseStmt
+    | While (expr, body) as loop ->
+      if (Expr.intToBool @@ Expr.eval st expr)
+        then eval env (eval env conf body) loop
+        else conf
+    | Repeat (body, expr) as loop ->
+      let ((st', _, _) as conf') = (eval env conf body) in
+      eval env conf' (if not (Expr.intToBool @@ Expr.eval st' expr) then loop else Skip)
+    | Call (fname, argExprs) ->
+      let argNames, locals, fbody = env#getFun fname in
+      let rec setParams stAcc = function
+      | (expr::argExprs'), (name::argNames') ->
+        let value = Expr.eval st expr in
+        setParams (State.update name value stAcc) (argExprs', argNames')
+      | [], [] -> stAcc
+      | _      -> failwith "Invalid number of arguments"
+      in
+      let st' = State.enter st (argNames @ locals) in
+      let st' = setParams st' (argExprs, argNames) in
+      let st', i', o' = eval env (st', i, o) fbody in
+      State.leave st st', i', o'
+
 
     (* Statement parser *)
     ostap (
@@ -169,7 +194,8 @@ module Stmt =
         -"while" expr:!(Expr.expr) -"do" st:stmt -"od" { While (expr, st) } |
         -"repeat" st:stmt -"until" expr:!(Expr.expr) { Repeat (st, expr) } |
         forStmt |
-        var:IDENT -":=" expr:!(Expr.expr) { Assign (var, expr) };
+        var:IDENT -":=" expr:!(Expr.expr) { Assign (var, expr) } |
+        fname:IDENT -"(" argExprs:!(Ostap.Util.list0)[Expr.expr] -")" { Call (fname, argExprs) };
 
       ifRec: expr:!(Expr.expr) -"then" st:stmt sf:(-"else" stmt -"fi" | -"elif" ifRec | -"fi" { Skip })
         { If (expr, st, sf) };
@@ -186,8 +212,6 @@ module Stmt =
         )
     )
 
-  let parse = stmt
-
   end
 
 (* Function and procedure definitions *)
@@ -198,7 +222,13 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (
-      parse: empty {failwith "Not implemented"}
+      identList0: !(Ostap.Util.list0)[ostap (IDENT)];
+      identList: !(Ostap.Util.list)[ostap (IDENT)];
+
+      funDef:
+        -"fun" fname:IDENT -"(" argNames:identList0 -")" locals:(-"local" identList | empty {[]})
+        -"{" body:!(Stmt.stmt) -"}"
+        {fname, (argNames, locals, body)}
     )
 
   end
@@ -214,7 +244,18 @@ type t = Definition.t list * Stmt.t
 
    Takes a program and its input stream, and returns the output stream
 *)
-let eval (defs, body) i = failwith "Not implemented"
+let eval (defs, body) i =
+  (* Printf.eprintf "%s\n" (GT.transform(Stmt.t) (new @Stmt.t[show]) () body); *)
+  let env =
+    object
+      method getFun fname =
+        let _, res = try (List.find (fun (name, _) -> name = fname) defs)
+        with Not_found -> failwith "Undefined function '%s'" fname
+        in res
+    end
+  in
+  let (_, _, outs) = Stmt.eval env (State.empty, i, []) body in
+  outs
 
 (* Top-level parser *)
-let parse = failwith "Not implemented"
+let parse = ostap ( !(Definition.funDef)* !(Stmt.stmt) )
