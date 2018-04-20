@@ -62,22 +62,6 @@ module Expr =
     (* The type of configuration: a state, an input stream, an output stream, an optional value *)
     type config = State.t * int list * int list * int option
 
-    (* Expression evaluator
-
-          val eval : env -> config -> t -> int * config
-
-
-       Takes an environment, a configuration and an expresion, and returns another configuration. The
-       environment supplies the following method
-
-           method definition : env -> string -> int list -> config -> config
-
-       which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration,
-       an returns a pair: the return value for the call and the resulting configuration
-    *)
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
-
-(*
     let boolToInt = function true -> 1 | false -> 0
     let intToBool b = b <> 0
 
@@ -99,12 +83,39 @@ module Expr =
       | "!!" -> fun x y -> boolToInt (intToBool x || intToBool y)
       | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
 
-    let rec eval st expr =
+    (* Expression evaluator
+
+          val eval : env -> config -> t -> int * config
+
+
+       Takes an environment, a configuration and an expresion, and returns another configuration. The
+       environment supplies the following method
+
+           method definition : env -> string -> int list -> config -> config
+
+       which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration,
+       an returns a pair: the return value for the call and the resulting configuration
+    *)
+    let rec eval env conf expr =
+      let (st, i, o, _) = conf in
       match expr with
-      | Const n -> n
-      | Var   x -> State.eval st x
-      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
-*)
+      | Const n -> st, i, o, Some n
+      | Var   x -> st, i, o, Some (State.eval st x)
+      | Binop (op, lhs, rhs) ->
+        let conf', vl = evalChecked env conf  lhs in
+        let conf', vr = evalChecked env conf' rhs in
+        let st', i', o', _ = conf' in
+        st', i', o', Some (to_func op vl vr)
+      | Call (fname, argExprs) ->
+        let evalArg argExpr (conf', argVals) =
+          let conf', argVal = evalChecked env conf' argExpr in
+          conf', argVal::argVals
+        in
+        let conf', argVals = List.fold_right evalArg argExprs (conf, []) in
+        env#definition env fname argVals conf'
+    and evalChecked env conf expr =
+      let (st, i, o, ret) = eval env conf expr in
+      match ret with | Some x -> (st, i, o, None), x | None -> failwith "Internal error"
 
     let binopParser op = (ostap($(op)), fun x y -> Binop (op, x, y))
     let binopParserList ops = List.map binopParser ops
@@ -128,7 +139,11 @@ module Expr =
           primary
         );
 
-      primary: x:DECIMAL {Const x} | var:IDENT {Var var} | -"(" expr -")"
+      primary:
+        x:DECIMAL {Const x} |
+        fname:IDENT -"(" argExprs:!(Ostap.Util.list0)[expr] -")" { Call (fname, argExprs) } |
+        var:IDENT {Var var} |
+        -"(" expr -")"
     )
 
   end
@@ -148,7 +163,8 @@ module Stmt =
     (* loop with a pre-condition        *) | While  of Expr.t * t
     (* loop with a post-condition       *) | Repeat of t * Expr.t
     (* return statement                 *) | Return of Expr.t option
-    (* call a procedure                 *) | Call   of string * Expr.t list with show
+    (* call a procedure                 *) | Call   of string * Expr.t list
+    with show
 
     (* Statement evaluator
 
@@ -161,45 +177,42 @@ module Stmt =
 
        which returns a list of formal parameters, local variables, and a body for given definition
     *)
-    let rec eval env conf cont prg = failwith "Not implemented yet"
-    (* let (st, i, o, ret) = conf in
-    function
-    | Read    x       -> (match i with z::i' -> (State.update x z st, i', o) | _ -> failwith "Unexpected end of input")
-    | Write   e       -> (st, i, o @ [Expr.eval st e])
-    | Assign (x, e)   -> (State.update x (Expr.eval st e) st, i, o)
-    | Seq    (s1, s2) -> eval env (eval env conf s1) s2
-    | Skip            -> conf
-    | If (expr, thenStmt, elseStmt) ->
-      if (Expr.intToBool @@ Expr.eval st expr)
-        then eval env conf thenStmt
-        else eval env conf elseStmt
-    | While (expr, body) as loop ->
-      if (Expr.intToBool @@ Expr.eval st expr)
-        then eval env (eval env conf body) loop
-        else conf
-    | Repeat (body, expr) as loop ->
-      let ((st', _, _) as conf') = (eval env conf body) in
-      eval env conf' (if not (Expr.intToBool @@ Expr.eval st' expr) then loop else Skip)
-    | Call (fname, argExprs) ->
-      let argNames, locals, fbody = env#getFun fname in
-      let rec setParams stAcc = function
-      | (expr::argExprs'), (name::argNames') ->
-        let value = Expr.eval st expr in
-        setParams (State.update name value stAcc) (argExprs', argNames')
-      | [], [] -> stAcc
-      | _      -> failwith "Invalid number of arguments"
-      in
-      let st' = State.enter st (argNames @ locals) in
-      let st' = setParams st' (argExprs, argNames) in
-      let st', i', o' = eval env (st', i, o) fbody in
-      State.leave st' st, i', o' *)
-
+    let rec eval env (st, i, o, ret) cont =
+      let concat a b = if (b = Skip) then a else Seq (a, b) in
+      let conf' = (st, i, o, None) in
+      let evalCont conf' = eval env conf' Skip cont in
+      function
+      | Seq (s1, s2)  -> eval env conf' (concat s2 cont) s1
+      | Return eOpt   -> (match eOpt with | None -> conf' | Some e -> Expr.eval env conf' e)
+      | Read   x      -> (match i with
+        | z::i' -> evalCont (State.update x z st, i', o, None)
+        | _ -> failwith "Unexpected end of input")
+      | Write  e      ->
+        let (st', i', o', _), v = Expr.evalChecked env conf' e in
+        evalCont (st', i', o'@[v], None)
+      | Skip          -> if (cont = Skip) then conf' else evalCont conf'
+      | Assign (x, e) ->
+        let (st', i', o', _), v = Expr.evalChecked env conf' e in
+        evalCont (State.update x v st', i', o', None)
+      | If (e, thenStmt, elseStmt) ->
+        let conf', v = Expr.evalChecked env conf' e in
+        if (Expr.intToBool v)
+          then eval env conf' cont thenStmt
+          else eval env conf' cont elseStmt
+      | While (e, body) as loop    ->
+        let conf', v = Expr.evalChecked env conf' e in
+        if (Expr.intToBool v)
+          then eval env conf' (concat loop cont) body
+          else evalCont conf'
+      | Repeat (body, e)       -> eval env conf' (concat (While (Expr.Binop ("==", e, Expr.Const 0), body)) cont) body
+      | Call (fname, argExprs) -> evalCont (Expr.eval env conf' (Expr.Call (fname, argExprs)))
 
     (* Statement parser *)
     ostap (
       primary:
         -"write" -"(" expr:!(Expr.expr) -")" { Write expr } |
         -"read" -"(" var:IDENT -")" { Read var } |
+        -"return" exprOpt:!(Expr.expr)? { Return exprOpt } |
         -"skip" { Skip } |
         ifStmt |
         -"while" expr:!(Expr.expr) -"do" st:stmt -"od" { While (expr, st) } |
@@ -236,8 +249,8 @@ module Definition =
       ident: IDENT;
 
       funDef:
-        -"fun" fname:IDENT -"(" argNames:!(Util.list0 ident) -")"
-        locals:(-"local" !(Util.list ident) | empty {[]})
+        -"fun" fname:IDENT -"(" argNames:!(Util.list0)[ident] -")"
+        locals:(-"local" !(Util.list)[ident] | empty {[]})
         -"{" body:!(Stmt.stmt) -"}"
         {fname, (argNames, locals, body)}
     )

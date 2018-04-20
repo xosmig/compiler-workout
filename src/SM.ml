@@ -138,6 +138,8 @@ let rec expr = function
 | Expr.Var   x          -> [LD x]
 | Expr.Const n          -> [CONST n]
 | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
+| Expr.Call (fname, argExprs) ->
+  List.fold_left (fun code argExpr -> expr argExpr @ code) [CALL ("L_FUNCTION_"^fname)] argExprs
 in
 function
 | Stmt.Seq (s1, s2)   ->
@@ -164,8 +166,10 @@ function
   let env, lcheck = env#getLabel in
   let env, smt, useLcheck = compileImpl env lcheck st in
   env, [LABEL lloop] @ smt @ (tryLabel lcheck useLcheck) @ expr e @ [CJMP ("z", lloop)], false
-| Stmt.Call (fname, argExprs) ->
-  env, List.fold_left (fun code argExpr -> expr argExpr @ code) [CALL ("L_FUNCTION_"^fname)] argExprs, false
+| Stmt.Call (fname, argExprs) -> env, expr (Expr.Call (fname, argExprs)), false
+| Stmt.Return eOpt ->
+  let sme = match eOpt with | Some e -> expr e | None -> [] in
+  env, sme @ [END], false
 
 let compileImplFinished env prog =
   let env, lend = env#getLabel in
