@@ -3,20 +3,20 @@
 (* The registers: *)
 let regs = [|"%ebx"; "%ecx"; "%esi"; "%edi"; "%eax"; "%edx"; "%ebp"; "%esp"|]
 
-(* We can not freely operate with all register; only 3 by now *)
+(* We can not freely operate with all register; only 3 by now *)                    
 let num_of_regs = Array.length regs - 5
 
 (* We need to know the word size to calculate offsets correctly *)
 let word_size = 4
 
 (* We need to distinguish the following operand types: *)
-type opnd =
+type opnd = 
 | R of int     (* hard register                    *)
 | S of int     (* a position on the hardware stack *)
 | M of string  (* a named memory location          *)
 | L of int     (* an immediate operand             *)
 
-(* For convenience we define the following synonyms for the registers: *)
+(* For convenience we define the following synonyms for the registers: *)         
 let ebx = R 0
 let ecx = R 1
 let esi = R 2
@@ -34,7 +34,7 @@ type instr =
 (* x86 integer division, see instruction set reference  *) | IDiv  of opnd
 (* see instruction set reference                        *) | Cltd
 (* sets a value from flags; the first operand is the    *) | Set   of string * string
-(* suffix, which determines the value being set, the    *)
+(* suffix, which determines the value being set, the    *)                     
 (* the second --- (sub)register name                    *)
 (* pushes the operand on the hardware stack             *) | Push  of opnd
 (* pops from the hardware stack to the operand          *) | Pop   of opnd
@@ -43,7 +43,7 @@ type instr =
 (* a label in the code                                  *) | Label of string
 (* a conditional jump                                   *) | CJmp  of string * string
 (* a non-conditional jump                               *) | Jmp   of string
-
+                                                               
 (* Instruction printer *)
 let show instr =
   let binop = function
@@ -51,7 +51,7 @@ let show instr =
   | "-"   -> "subl"
   | "*"   -> "imull"
   | "&&"  -> "andl"
-  | "!!"  -> "orl"
+  | "!!"  -> "orl" 
   | "^"   -> "xorl"
   | "cmp" -> "cmpl"
   | _     -> failwith "unknown binary operator"
@@ -79,15 +79,6 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
-let cmpType = function
-| "<" -> "l"
-| ">" -> "g"
-| "<=" -> "le"
-| ">=" -> "ge"
-| "==" -> "e"
-| "!=" -> "ne"
-| op -> failwith @@ "Unsupported comparison operation '" ^ op ^ "'"
-
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -95,43 +86,116 @@ let cmpType = function
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let rec compile env = function
-| [] -> env, []
-| (instr::codeTail) ->
-  let env, asm1 =
-    match instr with
-    | CONST n -> let res, env = env#allocate in
-      env, [Mov (L n, res)]
-    | WRITE -> let res, env = env#pop in
-      env, [Push res; Call "Lwrite"; Pop eax]
-    | READ -> let res, env = env#allocate in
-      env, [Call "Lread"; Mov (eax, res)]
-    | LD var -> let res, env = (env#global var)#allocate in
-      env, [Mov (M ("global_" ^ var), eax); Mov (eax, res)]
-    | ST var -> let res, env = (env#global var)#pop in
-      env, [Mov (res, eax); Mov (eax, M ("global_" ^ var))]
-    | BINOP op ->
-      let rhs, lhs, env = env#pop2 in
-      let res, env = env#allocate in
-        env, (match op with
-        | "+" | "-" | "*" -> [Mov (lhs, eax); Binop (op, rhs, eax); Mov (eax, res)]
-        | "&&" | "!!" -> [Mov (L 0, edx); Binop ("cmp", lhs, edx); Set ("ne", "%dl");
-                          Mov (L 0, eax); Binop ("cmp", rhs, eax); Set ("ne", "%al");
-                          Binop (op, edx, eax); Mov(eax, res)]
-        | "<" | ">" | ">=" | "<=" | "==" | "!=" ->
-          [Mov (lhs, eax); Binop ("cmp", rhs, eax);
-           Mov (L 0, edx); Set (cmpType op, "%dl"); Mov (edx, res)]
-        | "/" -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov (eax, res)]
-        | "%" -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov (edx, res)]
-        | _ -> failwith @@ "Unsupported binary operation '" ^ op ^ "'")
-    | LABEL label -> env, [Label label]
-    | JMP label   -> env, [Jmp label]
-    | CJMP (tp, label) -> let v, env = env#pop in env, [Binop ("cmp", L 0, v); CJmp (tp, label)]
+let compile env code =
+  let suffix = function
+  | "<"  -> "l"
+  | "<=" -> "le"
+  | "==" -> "e"
+  | "!=" -> "ne"
+  | ">=" -> "ge"
+  | ">"  -> "g"
+  | _    -> failwith "unknown operator"	
   in
-  let env, asm2 = compile env codeTail in
-  env, asm1 @ asm2
+  let rec compile' env scode =
+    let on_stack = function S _ -> true | _ -> false in
+    match scode with
+    | [] -> env, []
+    | instr :: scode' ->
+        let env', code' =
+          match instr with
+          | READ ->
+             let s, env' = env#allocate in
+             (env', [Call "Lread"; Mov (eax, s)])               
+          | WRITE ->
+             let s, env' = env#pop in
+             (env', [Push s; Call "Lwrite"; Pop eax])
+  	  | CONST n ->
+             let s, env' = env#allocate in
+	     (env', [Mov (L n, s)])               
+	  | LD x ->
+             let s, env' = (env#global x)#allocate in
+             env',
+	     (match s with
+	      | S _ | M _ -> [Mov (M (env'#loc x), eax); Mov (eax, s)]
+	      | _         -> [Mov (M (env'#loc x), s)]
+	     )	        
+	  | ST x ->
+	     let s, env' = (env#global x)#pop in
+             env',
+             (match s with
+              | S _ | M _ -> [Mov (s, eax); Mov (eax, M (env'#loc x))]
+              | _         -> [Mov (s, M (env'#loc x))]
+	     )
+          | BINOP op ->
+	     let x, y, env' = env#pop2 in
+             env'#push y,
+             (match op with
+	      | "/" | "%" ->
+                 [Mov (y, eax);
+                  Cltd;
+                  IDiv x;
+                  Mov ((match op with "/" -> eax | _ -> edx), y)
+                 ]
+              | "<" | "<=" | "==" | "!=" | ">=" | ">" ->
+                 (match x with
+                  | M _ | S _ ->
+                     [Binop ("^", eax, eax);
+                      Mov   (x, edx);
+                      Binop ("cmp", edx, y);
+                      Set   (suffix op, "%al");
+                      Mov   (eax, y)
+                     ]
+                  | _ ->
+                     [Binop ("^"  , eax, eax);
+                      Binop ("cmp", x, y);
+                      Set   (suffix op, "%al");
+                      Mov   (eax, y)
+                     ]
+                 )
+              | "*" ->
+                 if on_stack x && on_stack y 
+		 then [Mov (y, eax); Binop (op, x, eax); Mov (eax, y)]
+                 else [Binop (op, x, y)]
+	      | "&&" ->
+		 [Mov   (x, eax);
+		  Binop (op, x, eax);
+		  Mov   (L 0, eax);
+		  Set   ("ne", "%al");
+                  
+		  Mov   (y, edx);
+		  Binop (op, y, edx);
+		  Mov   (L 0, edx);
+		  Set   ("ne", "%dl");
+                  
+                  Binop (op, edx, eax);
+		  Set   ("ne", "%al");
+                  
+		  Mov   (eax, y)
+                 ]		   
+	      | "!!" ->
+		 [Mov   (y, eax);
+		  Binop (op, x, eax);
+                  Mov   (L 0, eax);
+		  Set   ("ne", "%al");
+		  Mov   (eax, y)
+                 ]		   
+	      | _   ->
+                 if on_stack x && on_stack y 
+                 then [Mov   (x, eax); Binop (op, eax, y)]
+                 else [Binop (op, x, y)]
+             )
+          | LABEL s     -> env, [Label s]
+	  | JMP   l     -> env, [Jmp l]
+          | CJMP (s, l) ->
+              let x, env = env#pop in
+              env, [Binop ("cmp", L 0, x); CJmp  (s, l)]
+        in
+        let env'', code'' = compile' env' scode' in
+	env'', code' @ code''
+  in
+  compile' env code
 
-(* A set of strings *)
+(* A set of strings *)           
 module S = Set.Make (String)
 
 (* Environment implementation *)
@@ -142,10 +206,10 @@ class env =
     val stack       = []       (* symbolic stack                    *)
 
     (* gets a name for a global variable *)
-    method loc x = "global_" ^ x
+    method loc x = "global_" ^ x                                 
 
     (* allocates a fresh position on a symbolic stack *)
-    method allocate =
+    method allocate =    
       let x, n =
 	let rec allocate' = function
 	| []                            -> ebx     , 0
@@ -162,14 +226,10 @@ class env =
     method push y = {< stack = y::stack >}
 
     (* pops one operand from the symbolic stack *)
-    method pop  = match stack with
-    | (x::stack) -> x, {< stack = stack >}
-    | _ -> failwith "Pop on empty stack"
+    method pop  = let x::stack' = stack in x, {< stack = stack' >}
 
     (* pops two operands from the symbolic stack *)
-    method pop2 = match stack with
-    | (x::y::stack) -> x, y, {< stack = stack >}
-    | _ -> failwith "Not enough values on stack for pop2"
+    method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
@@ -177,17 +237,17 @@ class env =
     (* gets the number of allocated stack slots *)
     method allocated = stack_slots
 
-    (* gets all global variables *)
+    (* gets all global variables *)      
     method globals = S.elements globals
   end
 
 (* Compiles a unit: generates x86 machine code for the stack program and surrounds it
    with function prologue/epilogue
 *)
-let compile_unit env scode =
+let compile_unit env scode =  
   let env, code = compile env scode in
-  env,
-  ([Push ebp; Mov (esp, ebp); Binop ("-", L (word_size*env#allocated), esp)] @
+  env, 
+  ([Push ebp; Mov (esp, ebp); Binop ("-", L (word_size*env#allocated), esp)] @ 
    code @
    [Mov (ebp, esp); Pop ebp; Binop ("^", eax, eax); Ret]
   )
@@ -219,4 +279,4 @@ let build stmt name =
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
   Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
-
+ 
