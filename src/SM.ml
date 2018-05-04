@@ -44,6 +44,8 @@ let binOpSemantic op = fun x y -> match op with
 | "!!" -> boolToInt (intToBool x || intToBool y)
 | _ -> failwith ("Unknown binary operation: '" ^ op ^ "'")
 
+let funcitonLabel fname = "L_FUNCTION_" ^ fname
+
 (* Stack machine interpreter
 
      val eval : env -> config -> prg -> config
@@ -86,7 +88,7 @@ let rec eval env config =
         eval env (cstack, stack', state) (if shouldJump then (env#labeled label) else progTail)
       | _ -> failwith "CJMP: Empty stack")
     | CALL (fname, _, _) -> eval env ((progTail, varState)::cstack, stack, state)
-      (env#labeled ("L_FUNCTION_"^fname))
+      (env#labeled (funcitonLabel fname))
     | BEGIN (_, argNames, locals) ->
       let bindArg (vs, st) arg = (match st with
       | (x::st') -> State.update arg x vs, st'
@@ -100,7 +102,7 @@ let rec eval env config =
       | ((retProg, retVarState)::cstack') ->
         let varState' = State.leave varState retVarState in
         eval env (cstack', stack, (varState', ins, outs)) retProg
-      | _ -> failwith "END: Empty cstack")
+      | _ -> config)
     | _ -> evalSimple cmd progTail)
 
 (* Top-level evaluation
@@ -192,8 +194,8 @@ let compileImplFinished env prog =
 let compile (defs, mainProg) =
   let compileFun (env, smCode) (fname, (argNames, locals, funProg)) =
     let env, funSMCode = compileImplFinished env funProg in
-    env, [LABEL ("L_FUNCTION_"^fname); BEGIN (fname, argNames, locals)] @ funSMCode @ [END] @ smCode
+    env, [LABEL (funcitonLabel fname); BEGIN (fname, argNames, locals)] @ funSMCode @ [END] @ smCode
   in
   let env, mainSMCode = compileImplFinished (new labelGen) mainProg in
   let env, funsSMCode = List.fold_left compileFun (env, []) defs in
-  mainSMCode @ [JMP "L_BUILTIN_stop"] @ funsSMCode @ [LABEL "L_BUILTIN_stop"]
+  mainSMCode @ [END] @ funsSMCode
