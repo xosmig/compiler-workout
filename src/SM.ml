@@ -85,8 +85,9 @@ let rec eval env config =
         let shouldJump = (match tp with "z" -> x == 0 | "nz" -> x != 0 | _ -> failwith "Unknown CJmp type") in
         eval env (cstack, stack', state) (if shouldJump then (env#labeled label) else progTail)
       | _ -> failwith "CJMP: Empty stack")
-    | CALL fname -> eval env ((progTail, varState)::cstack, stack, state) (env#labeled fname)
-    | BEGIN (argNames, locals) ->
+    | CALL (fname, _, _) -> eval env ((progTail, varState)::cstack, stack, state)
+      (env#labeled ("L_FUNCTION_"^fname))
+    | BEGIN (_, argNames, locals) ->
       let bindArg (vs, st) arg = (match st with
       | (x::st') -> State.update arg x vs, st'
       | _ -> failwith "BEGIN: empty stack")
@@ -94,6 +95,7 @@ let rec eval env config =
       let varState' = State.enter varState (argNames @ locals) in
       let varState', stack' = List.fold_left bindArg (varState', stack) argNames in
       eval env (cstack, stack', (varState', ins, outs)) progTail
+    | RET _ -> eval env config (END::progTail)
     | END -> (match cstack with
       | ((retProg, retVarState)::cstack') ->
         let varState' = State.leave varState retVarState in
@@ -139,7 +141,8 @@ let rec expr = function
 | Expr.Const n          -> [CONST n]
 | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
 | Expr.Call (fname, argExprs) ->
-  List.fold_left (fun code argExpr -> expr argExpr @ code) [CALL ("L_FUNCTION_"^fname)] argExprs
+  List.fold_left (fun code argExpr -> expr argExpr @ code)
+    [CALL (fname, List.length argExprs, true)] argExprs
 in
 function
 | Stmt.Seq (s1, s2)   ->
@@ -168,8 +171,11 @@ function
   env, [LABEL lloop] @ smt @ (tryLabel lcheck useLcheck) @ expr e @ [CJMP ("z", lloop)], false
 | Stmt.Call (fname, argExprs) -> env, expr (Expr.Call (fname, argExprs)), false
 | Stmt.Return eOpt ->
-  let sme = match eOpt with | Some e -> expr e | None -> [] in
-  env, sme @ [END], false
+  let smCode = match eOpt with
+  | Some e -> (expr e)@[RET true]
+  | None -> [RET false]
+  in
+  env, smCode, false
 
 let compileImplFinished env prog =
   let env, lend = env#getLabel in
@@ -186,7 +192,7 @@ let compileImplFinished env prog =
 let compile (defs, mainProg) =
   let compileFun (env, smCode) (fname, (argNames, locals, funProg)) =
     let env, funSMCode = compileImplFinished env funProg in
-    env, [LABEL ("L_FUNCTION_"^fname); BEGIN (argNames, locals)] @ funSMCode @ [END] @ smCode
+    env, [LABEL ("L_FUNCTION_"^fname); BEGIN (fname, argNames, locals)] @ funSMCode @ [END] @ smCode
   in
   let env, mainSMCode = compileImplFinished (new labelGen) mainProg in
   let env, funsSMCode = List.fold_left compileFun (env, []) defs in
