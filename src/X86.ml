@@ -83,6 +83,15 @@ let show instr =
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
+let cmpType = function
+| "<" -> "l"
+| ">" -> "g"
+| "<=" -> "le"
+| ">=" -> "ge"
+| "==" -> "e"
+| "!=" -> "ne"
+| op -> failwith @@ "Unsupported comparison operation '" ^ op ^ "'"
+
 (* Symbolic stack machine evaluator
 
      compile : env -> prg -> env * instr list
@@ -90,24 +99,71 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code =
-  let suffix = function
-  | "<"  -> "l"
-  | "<=" -> "le"
-  | "==" -> "e"
-  | "!=" -> "ne"
-  | ">=" -> "ge"
-  | ">"  -> "g"
-  | _    -> failwith "unknown operator"
+let rec compile env = function
+| [] -> env, []
+| (instr::codeTail) ->
+  let env, asm1 =
+    match instr with
+    | CONST n -> let res, env = env#allocate in
+      env, [Mov (L n, res)]
+    | LD var -> let res, env = (env#global var)#allocate in
+      env, [Mov (env#loc var, eax); Mov (eax, res)]
+    | ST var -> let res, env = (env#global var)#pop in
+      env, [Mov (res, eax); Mov (eax, env#loc var)]
+    | BINOP op ->
+      let rhs, lhs, env = env#pop2 in
+      let res, env = env#allocate in
+        env, begin match op with
+        | "+" | "-" | "*" -> [Mov (lhs, eax); Binop (op, rhs, eax); Mov (eax, res)]
+        | "&&" | "!!" -> [Mov (L 0, edx); Binop ("cmp", lhs, edx); Set ("ne", "%dl");
+                          Mov (L 0, eax); Binop ("cmp", rhs, eax); Set ("ne", "%al");
+                          Binop (op, edx, eax); Mov(eax, res)]
+        | "<" | ">" | ">=" | "<=" | "==" | "!=" ->
+          [Mov (lhs, eax); Binop ("cmp", rhs, eax);
+           Mov (L 0, edx); Set (cmpType op, "%dl"); Mov (edx, res)]
+        | "/" -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov (eax, res)]
+        | "%" -> [Mov (lhs, eax); Cltd; IDiv rhs; Mov (edx, res)]
+        | _ -> failwith @@ "Unsupported binary operation '" ^ op ^ "'"
+        end
+    | LABEL label -> env, [Label label]
+    | JMP label   -> env, [Jmp label]
+    | CJMP (tp, label) -> let v, env = env#pop in env, [Binop ("cmp", L 0, v); CJmp (tp, label)]
+    | BEGIN (fname, argNames, locals) ->
+      let env = env#enter fname argNames locals in
+      env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]
+    | END -> env, [Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret;
+                    Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))]
+    | RET hasValue -> if hasValue
+      then let x, env' = env#pop in env', [Mov (x, eax); Jmp env#epilogue]
+      else env, [Jmp env#epilogue]
+    | CALL (fname, argc, hasValue) ->
+      let rec pushArgs env' acc = function
+      | 0   -> env', acc
+      | cnt -> let x, env' = env'#pop in pushArgs env' (Push x::acc) (cnt - 1)
+      in
+      let env', asmPush = pushArgs env [] argc in
+      let asmSave = List.map (fun r -> Push r) env'#live_registers in
+      let asmRestore = List.rev (List.map (fun r -> Pop r) env'#live_registers) in
+      let res, env' = env'#allocate in
+      env', asmSave @ asmPush @ [Call (SM.functionLabel fname); Mov (eax, res);
+                      Binop ("+", L (argc * word_size), esp)] @ asmRestore
+
   in
-  let rec compile' env scode = failwith "Not implemented" in
-  compile' env code
+  let env, asm2 = compile env codeTail in
+  env, asm1 @ asm2
 
 (* A set of strings *)
 module S = Set.Make (String)
 
+let listInit (len : int) (gen : int -> 'a) : 'a list =
+  let rec initRec len acc = match len with
+  | 0 -> acc
+  | _ -> initRec (len - 1) ((gen (len - 1))::acc)
+  in
+  initRec len []
+
 (* Environment implementation *)
-let make_assoc l = List.combine l (Language.listInit (List.length l) (fun x -> x))
+let make_assoc l = List.combine l (listInit (List.length l) (fun x -> x))
 
 class env =
   object (self)
@@ -127,14 +183,14 @@ class env =
     (* allocates a fresh position on a symbolic stack *)
     method allocate =
       let x, n =
-	let rec allocate' = function
-	| []                            -> ebx     , 0
-	| (S n)::_                      -> S (n+1) , n+2
-	| (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
+        let rec allocate' = function
+        | []                            -> ebx     , 0
+        | (S n)::_                      -> S (n+1) , n+1
+        | (R n)::_ when n < num_of_regs -> R (n+1) , stack_slots
         | (M _)::s                      -> allocate' s
-	| _                             -> S 0     , 1
-	in
-	allocate' stack
+        | _                             -> S 0     , 1
+        in
+        allocate' stack
       in
       x, {< stack_slots = max n stack_slots; stack = x::stack >}
 
@@ -142,10 +198,14 @@ class env =
     method push y = {< stack = y::stack >}
 
     (* pops one operand from the symbolic stack *)
-    method pop = let x::stack' = stack in x, {< stack = stack' >}
+    method pop = match stack with
+    | x::stack' -> x, {< stack = stack' >}
+    | _ -> failwith "env#pop : empty stack"
 
     (* pops two operands from the symbolic stack *)
-    method pop2 = let x::y::stack' = stack in x, y, {< stack = stack' >}
+    method pop2 = match stack with
+    | x::y::stack' -> x, y, {< stack = stack' >}
+    | _ -> failwith "env#pop2 : not enough elements on stack"
 
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}

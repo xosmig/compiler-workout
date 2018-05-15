@@ -90,6 +90,7 @@ module Builtin =
     | "$array"   -> (st, i, o, Some (Value.of_array args))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
+    | fname -> failwith @@ Printf.sprintf "Function '%s' not found" fname
 
   end
 
@@ -186,7 +187,7 @@ module Expr =
         env#definition env fname argVals conf'
     and evalChecked env conf expr =
       let (st, i, o, ret) = eval env conf expr in
-      match ret with | Some x -> (st, i, o, None), x | None -> failwith "Internal error"
+      match ret with | Some x -> (st, i, o, None), x | None -> failwith "Internal error 1"
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -227,11 +228,22 @@ module Expr =
 
       atomicExpression: withLength;
 
-      withLength: obj:withIndexes ".length" { Length obj } | withIndexes;
+      withLength:
+        obj:withIndexes lengthCall:".length"? {
+          begin match lengthCall with
+          | None -> obj
+          | _    -> Length obj
+          end
+        };
+
       withIndexes:
-        obj:primary indexes:(-"[" expr -"]")+
-          { List.fold_left (fun obj idx -> Elem (obj, idx)) obj indexes } |
-        primary;
+        obj:primary indexes:(-"[" expr -"]")* {
+          begin match indexes with
+          | [] -> obj
+          | _  -> List.fold_left (fun obj idx -> Elem (obj, idx)) obj indexes
+          end
+        };
+
 
       primary:
         x:DECIMAL {Const x} |
