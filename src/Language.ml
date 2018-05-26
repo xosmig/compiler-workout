@@ -179,11 +179,12 @@ module Expr =
         let st', i', o', _ = conf' in
         st', i', o', Some (Value.Int (to_func op (Value.to_int vl) (Value.to_int vr)))
       | Call (fname, argExprs) ->
-        let evalArg argExpr (conf', argVals) =
+        (* first argument evaluated first *)
+        let evalArg (conf', argVals) argExpr =
           let conf', argVal = evalChecked env conf' argExpr in
-          conf', argVal::argVals
+          conf', (argVals @ [argVal])
         in
-        let conf', argVals = List.fold_right evalArg argExprs (conf, []) in
+        let conf', argVals = List.fold_left evalArg (conf, []) argExprs in
         env#definition env fname argVals conf'
     and evalChecked env conf expr =
       let (st, i, o, ret) = eval env conf expr in

@@ -113,12 +113,13 @@ let rec eval env config =
         else let conf' = env#builtin config fname numOfArgs isProcedure in
           eval env conf' progTail
     | BEGIN (_, argNames, locals) ->
-      let bindArg (vs, st) arg = (match st with
-      | (x::st') -> State.update arg x vs, st'
-      | _ -> failwith "BEGIN: empty stack")
-      in
+      (* last argument is on top of the stack *)
+      let bindArg argName (varState', stack') = begin match stack' with
+      | (x::stack') -> State.update argName x varState', stack'
+      | _ -> failwith "BEGIN: empty stack"
+      end in
       let varState' = State.enter varState (argNames @ locals) in
-      let varState', stack' = List.fold_left bindArg (varState', stack) argNames in
+      let varState', stack' = List.fold_right bindArg argNames (varState', stack) in
       eval env (cstack, stack', (varState', ins, outs)) progTail
     | RET _ -> eval env config (END::progTail)
     | END -> (match cstack with
@@ -150,7 +151,6 @@ let run p i =
         method labeled l = M.find l m
         method builtin (cstack, stack, (st, i, o)) f n isProcedure =
           let args, stack' = split n stack in
-          let args = List.rev args in
           let (st, i, o, r) = Language.Builtin.eval (st, i, o, None) (List.rev args) f in
           let stack'' = if isProcedure then stack' else let Some r = r in r::stack' in
           (cstack, stack'', (st, i, o))
@@ -169,8 +169,8 @@ class labelGen =
 let tryLabel lname useLabel = if useLabel then [LABEL lname] else []
 
 let rec compileImpl env lend =
-(* first argument must be evaluated last *)
-let rec evalArgs argExprs = List.fold_left (fun code argExpr -> expr argExpr @ code) [] argExprs
+(* first argument evaluated first *)
+let rec evalArgs argExprs = List.fold_left (fun code argExpr -> code @ (expr argExpr)) [] argExprs
 and expr = function
 | Expr.Var   x          -> [LD x]
 | Expr.Const n          -> [CONST n]
