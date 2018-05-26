@@ -44,7 +44,7 @@ let binOpSemantic op = fun x y -> match op with
 | "!!" -> boolToInt (intToBool x || intToBool y)
 | _ -> failwith ("Unknown binary operation: '" ^ op ^ "'")
 
-let functionLabelPrefix = "L_FUNCTION_"
+let functionLabelPrefix = "L"
 let functionLabel fname = functionLabelPrefix ^ fname
 let functionLabelPrefixLength = String.length functionLabelPrefix
 
@@ -188,8 +188,10 @@ function
   let env, sm1, useLend1 = compileImpl env lend1 s1 in
   let env, sm2, useLend = compileImpl env lend  s2 in
   env, sm1 @ (tryLabel lend1 useLend1) @ sm2, useLend
-| Stmt.Assign (varName, indexesExpr, valueExpr) ->
-  env, List.flatten (List.map expr indexesExpr) @ expr valueExpr @ [STA (varName, List.length indexesExpr)], false
+| Stmt.Assign (varName, indexExprs, valueExpr) -> env, begin match indexExprs with
+  | [] -> expr valueExpr @ [ST varName]
+  | _  -> List.flatten (List.map expr indexExprs) @ expr valueExpr @ [STA (varName, List.length indexExprs)]
+  end, false
 | Stmt.Skip           -> env, [], false
 | Stmt.If (e, st, sf) ->
   let env, lelse = env#getLabel in

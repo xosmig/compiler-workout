@@ -147,7 +147,9 @@ let rec compile env = function
       let res, env' = env'#allocate in
       env', asmSave @ asmPush @ [Call (SM.functionLabel fname); Mov (eax, res);
                       Binop ("+", L (argc * word_size), esp)] @ asmRestore
-
+     | STRING _ -> failwith "String"
+     | STA _ -> failwith "STA"
+     | _ -> failwith "????"
   in
   let env, asm2 = compile env codeTail in
   env, asm1 @ asm2
