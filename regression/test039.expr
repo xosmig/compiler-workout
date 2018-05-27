@@ -1,20 +1,21 @@
+(* please, don't mix spaces with tabs *)
 fun insert (t, x) {
   case t of
     `leaf           -> return `node (x, `leaf, `leaf)
   | `node (y, l, r) -> if x > y
                           then return `node (y, insert (l, x), r)
-			  else return `node (y, l, insert (r, x))
-		       fi
+                          else return `node (y, l, insert (r, x))
+                       fi
   esac
 }
 
 fun find (t, x) {
   case t of
     `leaf           -> return 0
-  | `node (y, l, r) -> if x == y then return 1
-		       elif x > y then return find (l, x)
-		                  else return find (r, x)
-		       fi
+  | `node (y, l, r) -> if x == y  then return 1
+                       elif x > y then return find (l, x)
+                                  else return find (r, x)
+                       fi
   esac
 }
 
