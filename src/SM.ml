@@ -75,11 +75,21 @@ let rec eval env config =
   |  y::x::stack -> Value.of_int (f (Value.to_int x) (Value.to_int y)) :: stack
   |  _ -> failwith "BINOP: No operands on stack"
   in
+  (* straight order of evaluation: last argument is on top of the stack *)
+  let bindList varNames varState stack =
+    List.fold_right begin fun argName (varState, stack) ->
+      let value::stack' = stack in
+      State.update argName value varState, stack'
+    end varNames (varState, stack)
+  in
   let evalSimple cmd progTail =
     let config' = match cmd with
     | BINOP op   -> cstack, evalBinOp (binOpSemantic op) stack, state
     | CONST x    -> cstack, (Value.of_int x)::stack, state
     | STRING str -> cstack, (Value.of_string str)::stack, state
+    | SEXP (tag, compN) ->
+      let compValues, stack' = split compN stack in
+      cstack, (Value.sexp tag compValues)::stack', state
     | LD var     -> cstack, (State.eval varState var)::stack, state
     | ST var     -> begin match stack with
       | x::stack' -> cstack, stack', ((State.update var x varState), ins, outs)
@@ -99,6 +109,20 @@ let rec eval env config =
       | _ -> failwith "STA: No value on stack"
       end
     | LABEL _ -> config
+    | DROP    -> cstack, (List.tl stack), state
+    | DUP     -> cstack, (List.hd stack)::stack, state
+    | SWAP    -> cstack, (let x::y::stack' = stack in y::x::stack'), state
+    | TAG tag ->
+      let res = match List.hd stack with
+      | Value.Sexp (valueTag, _) when valueTag = tag -> 1
+      | _ -> 0
+      in
+      cstack, (Value.of_int res)::(List.tl stack), state
+    | ENTER varNames ->
+      let varState' = State.push varState State.undefined varNames in
+      let varState', stack' = bindList varNames varState' stack in
+      cstack, stack', (varState', ins, outs)
+    | LEAVE -> cstack, stack, (State.drop varState, ins, outs)
     | _       -> failwith "Internal error 2"
     in eval env config' progTail
   in
@@ -113,28 +137,23 @@ let rec eval env config =
         eval env (cstack, stack', state) (if shouldJump then (env#labeled label) else progTail)
       | _ -> failwith "CJMP: Empty stack"
       end
-    | CALL (fname, numOfArgs, isProcedure) ->
-      let fLabel = "L" ^ fname in
-      if env#is_label fLabel
-        then eval env ((progTail, varState)::cstack, stack, state) (env#labeled fLabel)
-        else let conf' = env#builtin config fname numOfArgs isProcedure in
-          eval env conf' progTail
     | BEGIN (_, argNames, locals) ->
-      (* last argument is on top of the stack *)
-      let bindArg argName (varState', stack') = match stack' with
-      | x::stack' -> State.update argName x varState', stack'
-      | _ -> failwith "BEGIN: empty stack"
-      in
       let varState' = State.enter varState (argNames @ locals) in
-      let varState', stack' = List.fold_right bindArg argNames (varState', stack) in
+      let varState', stack' = bindList argNames varState' stack in
       eval env (cstack, stack', (varState', ins, outs)) progTail
-    | RET _ -> eval env config (END::progTail)
     | END   -> begin match cstack with
       | (retProg, retVarState)::cstack' ->
         let varState' = State.leave varState retVarState in
         eval env (cstack', stack, (varState', ins, outs)) retProg
       | _ -> config
       end
+    | CALL (fname, numOfArgs, isProcedure) ->
+      let fLabel = "L" ^ fname in
+      if env#is_label fLabel
+        then eval env ((progTail, varState)::cstack, stack, state) (env#labeled fLabel)
+        else let conf' = env#builtin config fname numOfArgs isProcedure in
+          eval env conf' progTail
+    | RET _ -> eval env config (END::progTail)
     | _ -> evalSimple cmd progTail
     end
 
@@ -185,16 +204,30 @@ let compile (defs, p) =
     args_code @ [CALL (fname, List.length args, p)]
   and pattern lfalse = function
   | Stmt.Pattern.Wildcard       -> false, [DROP]
-  | Stmt.Pattern.Ident varName  -> false, [ST varName]
+  | Stmt.Pattern.Ident varName  -> false, [DROP]
   | Stmt.Pattern.Sexp (pTag, subPatterns) -> true,
-    [DUP; TAG pTag; CJMP ("z", lfalse)] @ begin
-      List.flatten @@ List.mapi
-      begin fun i patt ->
-        [DUP; CONST i; CALL (".elem", 2, false)] @
-        snd @@ pattern lfalse patt
+    [DUP; TAG pTag; CJMP ("z", lfalse)] @ List.flatten @@
+      List.mapi begin fun i subPatt ->
+        let _, pattCode = pattern lfalse subPatt in
+        [DUP; CONST i; CALL (".elem", 2, false)] @ pattCode
+      end subPatterns
+  and bindings (patt : Stmt.Pattern.t) =
+    (* expects the stack to be in form of: *)
+    (* [value for matching; outermost value] @ [values for bindings] @ tail *)
+    (* leaves the stack in form of: *)
+    (* [outermost value] @ [new values for bindings] @ [old values for bindings] @ tail  *)
+    let rec inner =
+    function
+    | Stmt.Pattern.Wildcard       -> [DROP]
+    | Stmt.Pattern.Ident varName  -> [SWAP]
+    | Stmt.Pattern.Sexp (pTag, subPatterns) ->
+      List.flatten begin
+        List.mapi begin fun i subPatt ->
+          [DUP; CONST i; CALL (".elem", 2, false)] @ (inner subPatt)
+        end subPatterns
       end
-      subPatterns
-    end
+    in
+    inner patt @ [ENTER (Stmt.Pattern.vars patt)]
   and expr = function
   | Expr.Const n                      -> [CONST n]
   | Expr.Array valueExprs             -> expr (Expr.Call (".array", valueExprs))
@@ -235,6 +268,11 @@ let compile (defs, p) =
     let lcheck, env = env#get_label in
     let env, useLcheck, smt = compile_stmt env lcheck st in
     env, false, [LABEL lloop] @ smt @ (tryLabel lcheck useLcheck) @ expr e @ [CJMP ("z", lloop)]
+  | Stmt.Case (e, branches) ->
+    failwith "to do"
+    (*List.flatten @@ List.map begin fun branch ->*)
+      (**)
+    (*end branches*)
   | Stmt.Return eOpt ->
       let smCode = match eOpt with
       | Some e -> (expr e)@[RET true]

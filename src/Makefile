@@ -5,8 +5,7 @@ OCAMLDEP = ocamlfind dep
 SOURCES = Language.ml SM.ml X86.ml Driver.ml
 CAMLP5 = -syntax camlp5o -package ostap.syntax,GT.syntax.all
 PXFLAGS = $(CAMLP5)
-# -w -p disables partial pattern matching warning
-BFLAGS = -rectypes -w -p
+BFLAGS = -rectypes
 OFLAGS = $(BFLAGS)
 
 all: .depend $(TOPFILE).opt
