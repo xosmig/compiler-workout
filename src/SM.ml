@@ -89,7 +89,7 @@ let rec eval env config =
     | STRING str -> cstack, (Value.of_string str)::stack, state
     | SEXP (tag, compN) ->
       let compValues, stack' = split compN stack in
-      cstack, (Value.sexp tag compValues)::stack', state
+      cstack, (Value.sexp tag (List.rev compValues))::stack', state
     | LD var     -> cstack, (State.eval varState var)::stack, state
     | ST var     -> begin match stack with
       | x::stack' -> cstack, stack', ((State.update var x varState), ins, outs)
@@ -118,10 +118,8 @@ let rec eval env config =
       | _ -> 0
       in
       cstack, (Value.of_int res)::(List.tl stack), state
-    | ENTER varNames ->
-      let varState' = State.push varState State.undefined varNames in
-      let varState', stack' = bindList varNames varState' stack in
-      cstack, stack', (varState', ins, outs)
+    (*doesn't pop anything from stack, doesn't do any bindings, just allocates a new state frame*)
+    | ENTER varNames -> cstack, stack, (State.push varState State.undefined varNames, ins, outs)
     | LEAVE -> cstack, stack, (State.drop varState, ins, outs)
     | _       -> failwith "Internal error 2"
     in eval env config' progTail
@@ -202,32 +200,25 @@ let compile (defs, p) =
   let rec call fname args p =
     let args_code = List.concat @@ List.map expr args in
     args_code @ [CALL (fname, List.length args, p)]
-  and pattern lfalse = function
-  | Stmt.Pattern.Wildcard       -> false, [DROP]
-  | Stmt.Pattern.Ident varName  -> false, [DROP]
-  | Stmt.Pattern.Sexp (pTag, subPatterns) -> true,
-    [DUP; TAG pTag; CJMP ("z", lfalse)] @ List.flatten @@
-      List.mapi begin fun i subPatt ->
-        let _, pattCode = pattern lfalse subPatt in
-        [DUP; CONST i; CALL (".elem", 2, false)] @ pattCode
-      end subPatterns
-  and bindings (patt : Stmt.Pattern.t) =
-    (* expects the stack to be in form of: *)
-    (* [value for matching; outermost value] @ [values for bindings] @ tail *)
-    (* leaves the stack in form of: *)
-    (* [outermost value] @ [new values for bindings] @ [old values for bindings] @ tail  *)
-    let rec inner =
-    function
-    | Stmt.Pattern.Wildcard       -> [DROP]
-    | Stmt.Pattern.Ident varName  -> [SWAP]
-    | Stmt.Pattern.Sexp (pTag, subPatterns) ->
-      List.flatten begin
-        List.mapi begin fun i subPatt ->
-          [DUP; CONST i; CALL (".elem", 2, false)] @ (inner subPatt)
-        end subPatterns
-      end
+  and pattern env lfail = function
+  | Stmt.Pattern.Wildcard       -> env, false, [], [DROP]
+  | Stmt.Pattern.Ident varName  -> env, false, [varName], [ST varName]
+  | Stmt.Pattern.Sexp (pTag, compPatterns) ->
+    let rec subpatterns env lfalse i = function
+    | []          -> env, false, [], []
+    | head::tail  ->
+      let env, useLfalse1, headVars, headMatchCode = pattern env lfalse head in
+      let env, useLfalse2, tailVars, tailCode = subpatterns env lfalse (i + 1) tail in
+      env, useLfalse1 || useLfalse2, headVars @ tailVars,
+        [DUP; CONST i; CALL (".elem", 2, false)] @ headMatchCode @ tailCode
     in
-    inner patt @ [ENTER (Stmt.Pattern.vars patt)]
+    let lfalse, env = env#get_label in
+    let ltrue,  env = env#get_label in
+    let env, useLfail, varNames, subMatchCode = subpatterns env lfalse 0 compPatterns in
+    env, true, varNames,
+      [DUP; TAG pTag; CJMP ("nz", ltrue)]
+      @ [LABEL lfalse; DROP; JMP lfail]
+      @ [LABEL ltrue] @ subMatchCode @ [DROP]
   and expr = function
   | Expr.Const n                      -> [CONST n]
   | Expr.Array valueExprs             -> expr (Expr.Call (".array", valueExprs))
@@ -244,8 +235,8 @@ let compile (defs, p) =
   let tryLabel lname useLabel = if useLabel then [LABEL lname] else [] in
   let rec compile_stmt env lend = function
   | Stmt.Assign (varName, indexExprs, valueExpr) -> env, false, begin match indexExprs with
-    | _  -> exprList indexExprs @ expr valueExpr @ [STA (varName, List.length indexExprs)]
     | [] -> expr valueExpr @ [ST varName]
+    | _  -> exprList indexExprs @ expr valueExpr @ [STA (varName, List.length indexExprs)]
     end
   | Stmt.Seq (s1, s2)   ->
     let lend1, env = env#get_label in
@@ -269,10 +260,27 @@ let compile (defs, p) =
     let env, useLcheck, smt = compile_stmt env lcheck st in
     env, false, [LABEL lloop] @ smt @ (tryLabel lcheck useLcheck) @ expr e @ [CJMP ("z", lloop)]
   | Stmt.Case (e, branches) ->
-    failwith "to do"
-    (*List.flatten @@ List.map begin fun branch ->*)
-      (**)
-    (*end branches*)
+    let compileBranch env (patt, body) =
+      let lfail, env = env#get_label in
+      let env, canFail, matchVars, matchCode = pattern env lfail patt in
+      let env, _, bodyCode = compile_stmt env lend body in
+      env,
+        [DUP; ENTER matchVars]  (* Duplicate the value for matching and create new state frame *)
+        @ matchCode             (* Try to match the value with the pattern. Consumes the duplicate of the value *)
+        (* If matching succeeded, drop the original value and exit *)
+        @ [DROP] @ bodyCode @ [JMP lend]
+        (* Otherwise, drop the state frame and proceed to the next branch *)
+        @ if canFail then [LABEL lfail; LEAVE] else []
+    in
+    let rec compileBranches env = function
+    | [] -> env, []
+    | head::tail ->
+      let env, codeHead = compileBranch   env head in
+      let env, codeTail = compileBranches env tail in
+      env, codeHead @ codeTail
+    in
+    let env, matchCode = compileBranches env branches in
+    env, true, expr e @ matchCode @ [STRING "Case failed"; CALL (".panic", 1, true)]
   | Stmt.Return eOpt ->
       let smCode = match eOpt with
       | Some e -> (expr e)@[RET true]
