@@ -6,6 +6,7 @@
 # include <string.h>
 # include <stdarg.h>
 # include <alloca.h>
+# include <stdlib.h>
 
 # define STRING_TAG 0x00000000
 # define ARRAY_TAG  0x01000000
@@ -101,6 +102,11 @@ extern void* Bsexp (int n, ...) {
 extern int Btag (void *d, int t) {
   data *r = TO_DATA(d);
   return TAG(r->tag) == SEXP_TAG && TO_SEXP(d)->tag == t;
+}
+
+extern int Bpanic (char *s) {
+  printf("PANIC: %s\n", s);
+  exit(2);
 }
 
 /* Array store builtin; takes the number of indices, the value to store, the array, and the indices themselves */
